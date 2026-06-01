@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, Events, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder, REST, Routes } = require('discord.js');
 
 // ── CONFIG ────────────────────────────────────────────────────────────
-const TOKEN = process.env.BOT_TOKEN || 'MTUxMDkxMzMxODU0ODY3MjYzMg.GdzYKv.s6Ike88LqMHA2PF_-vzWoX6Wi0awO4050Df5pA';
+const TOKEN = process.env.BOT_TOKEN;
 const GUILD_ID = '1041454652782280784';
 const AUDIT_CHANNEL_ID = '1329418908234682428';
 
