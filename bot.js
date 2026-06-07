@@ -113,6 +113,10 @@ async function processAuditMessage(message) {
   const msgTs = message.createdTimestamp;
 
   for (const embed of message.embeds) {
+    // Log only new format messages for debugging
+    if (msgTs >= SYNC_CUTOFF) {
+      console.log(`[NEW AUDIT] ts=${msgTs} title="${embed.title}" fields=${JSON.stringify(embed.fields?.map(f=>({n:f.name,v:f.value})))}`);
+    }
     const parsed = parseAuditEmbed(embed, msgTs);
     if (!parsed || !parsed.name || !parsed.staticId) continue;
 
