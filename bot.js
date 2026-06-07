@@ -101,6 +101,9 @@ async function processAuditMessage(message) {
   if (!message.embeds || !message.embeds.length) return;
 
   for (const embed of message.embeds) {
+    // Log raw embed for debugging
+    console.log(`[AUDIT RAW] title="${embed.title}" fields=${JSON.stringify(embed.fields?.map(f=>({n:f.name,v:f.value})))}`);
+    
     const parsed = parseAuditEmbed(embed);
     if (!parsed || !parsed.name || !parsed.staticId) continue;
 
