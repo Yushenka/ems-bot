@@ -1,4 +1,12 @@
 const { Client, GatewayIntentBits, Events, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } = require('discord.js');
+const http = require('http');
+
+// Keep-alive HTTP server for Render
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('EMS Bot running');
+}).listen(PORT, () => console.log(`HTTP server on port ${PORT}`));
 
 const TOKEN = process.env.BOT_TOKEN;
 const GUILD_ID = '1041454652782280784';
