@@ -56,55 +56,64 @@ async function saveStaff(staff) {
 }
 
 // ── PARSE AUDIT EMBED ───────────────────────────────────────────────
-function parseAuditEmbed(embed) {
-  // Title indicates action type
-  const title = embed.title || '';
+// Cutoff date: May 22, 2026
+const SYNC_CUTOFF = new Date('2026-05-22T00:00:00+03:00').getTime();
+
+function parseAuditEmbed(embed, messageTimestamp) {
+  // Only process messages after May 22, 2026
+  if (messageTimestamp && messageTimestamp < SYNC_CUTOFF) return null;
+
+  const fields = embed.fields || [];
+
+  // New format: has "Дія" and "Працівник" fields (Swarovski bot)
+  const diaField = fields.find(f => f.name?.includes('Дія') || f.name?.includes('Дiя'));
+  const workerField = fields.find(f => f.name?.includes('Працівник') || f.name?.includes('Працiвник'));
+  const rankField = fields.find(f => f.name?.includes('Ранг'));
+
+  if (!diaField || !workerField) return null;
+
+  // Parse action
+  const diaText = diaField.value || '';
   let action = null;
-  if (title.includes('Підвищ')) action = 'promote';
-  else if (title.includes('Пониз')) action = 'demote';
-  else if (title.includes('Прийн')) action = 'hire';
-  else if (title.includes('Звільн')) action = 'fire';
+  if (diaText.includes('Підвищив') || diaText.includes('Пiдвищив')) action = 'promote';
+  else if (diaText.includes('Понизив')) action = 'demote';
+  else if (diaText.includes('Прийняв')) action = 'hire';
+  else if (diaText.includes('Звільнив') || diaText.includes('Звiльнив')) action = 'fire';
   if (!action) return null;
 
-  // Parse fields
-  const fields = embed.fields || [];
-  let workerField = fields.find(f => f.name?.includes('Працівник') || f.name?.includes('Worker'));
-  let rankField = fields.find(f => f.name?.includes('Ранг') || f.name?.includes('Rank'));
+  // Parse worker name and static from "Artem Win #847"
+  const workerText = (workerField.value || '').trim();
+  const workerMatch = workerText.match(/^(.+?)\s*#(\d+)$/);
+  if (!workerMatch) return null;
+  const name = workerMatch[1].trim();
+  const staticId = workerMatch[2].trim();
 
-  // Also try description
-  const desc = embed.description || '';
-
-  // Extract worker name and static
-  let name = '', staticId = '';
-  const workerText = workerField?.value || desc;
-  const workerMatch = workerText.match(/([A-Za-zА-ЯҐЄІЇа-яґєії\s']+)\s*#(\d+)/);
-  if (workerMatch) {
-    name = workerMatch[1].trim();
-    staticId = workerMatch[2].trim();
+  // Parse rank from rank field
+  const rankText = (rankField?.value || '').trim();
+  // "3 4 ранг на 5 ранг" → toRank=5
+  // "Звільнений(-а) з 3 ранг" → fromRank=3
+  // "Прийнятий(-а) на 1 ранг" → toRank=1
+  let toRank = null;
+  const rankToMatch = rankText.match(/на\s*(\d+)\s*ранг/i);
+  const rankDirectMatch = rankText.match(/(\d+)\s*ранг\s*$/i);
+  if (rankToMatch) toRank = parseInt(rankToMatch[1]);
+  else if (rankDirectMatch && (action === 'hire' || action === 'promote' || action === 'demote')) {
+    // Try to get the last rank number
+    const nums = rankText.match(/\d+/g);
+    if (nums) toRank = parseInt(nums[nums.length - 1]);
   }
 
-  // Extract rank info
-  let rankText = rankField?.value || '';
-  // "3 4 ранг на 5 ранг" → toRank=5
-  // "Звільнений(-а) з 4 ранг" → fromRank=4
-  let toRank = null, fromRank = null;
-  const rankToMatch = rankText.match(/на\s*(\d+)\s*ранг/i);
-  const rankFromMatch = rankText.match(/з\s*(\d+)\s*ранг/i) || rankText.match(/(\d+)\s*ранг/i);
-  if (rankToMatch) toRank = parseInt(rankToMatch[1]);
-  if (rankFromMatch) fromRank = parseInt(rankFromMatch[1]);
-
-  return { action, name, staticId, toRank, fromRank, rankText };
+  return { action, name, staticId, toRank, rankText };
 }
 
 // ── PROCESS AUDIT MESSAGE ───────────────────────────────────────────
 async function processAuditMessage(message) {
   if (!message.embeds || !message.embeds.length) return;
 
+  const msgTs = message.createdTimestamp;
+
   for (const embed of message.embeds) {
-    // Log raw embed for debugging
-    console.log(`[AUDIT RAW] title="${embed.title}" fields=${JSON.stringify(embed.fields?.map(f=>({n:f.name,v:f.value})))}`);
-    
-    const parsed = parseAuditEmbed(embed);
+    const parsed = parseAuditEmbed(embed, msgTs);
     if (!parsed || !parsed.name || !parsed.staticId) continue;
 
     const { action, name, staticId, toRank } = parsed;
