@@ -1,24 +1,25 @@
-const { Client, GatewayIntentBits, Events, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, Events, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } = require('discord.js');
 
-// ── CONFIG ────────────────────────────────────────────────────────────
 const TOKEN = process.env.BOT_TOKEN;
 const GUILD_ID = '1041454652782280784';
 const AUDIT_CHANNEL_ID = '1329418908234682428';
+const PROXY = 'https://ems-proxy.mirely1234.workers.dev';
 
-// Webhook channels — бот слідкує за цими каналами і додає кнопки
-const REPORT_CHANNELS = {
-  '': 'adrenaline', // замінити на реальні ID каналів
-};
+// SA password for KV writes
+const SA_PASS = process.env.SA_PASS || 'YUSHA_SUPERADMIN';
 
-// Ролі які можуть схвалювати/відхиляти
 const APPROVER_ROLES = [
   '1328668577082904630', // Головний лікар
   '1041467317353193472', // Заступник головного лікаря
 ];
 
-// Saturday reminder time (Kyiv UTC+3) — 18:00
-const REMINDER_HOUR_KYIV = 18;
-const REMINDER_DAY = 6; // Saturday
+// Rank map — number to name
+const RANK_NAMES = {
+  1: 'Студент (1)', 2: 'Інтерн (2)', 3: 'Парамедик (3)',
+  4: 'Фельдшер (4)', 5: 'Терапевт (5)', 6: 'Хірург (6)',
+  7: 'Спеціаліст (7)', 8: 'Заст. Завід. (8)', 9: 'Завідувач (9)',
+  10: 'Заст. Гол. Лікаря (10)', 11: 'Головний Лікар',
+};
 
 const client = new Client({
   intents: [
@@ -29,155 +30,227 @@ const client = new Client({
   ],
 });
 
-// ── READY ─────────────────────────────────────────────────────────────
+// ── KV HELPERS ─────────────────────────────────────────────────────
+async function getStaff() {
+  const r = await fetch(`${PROXY}/admin/staff`, {
+    headers: { 'X-Admin-Password': SA_PASS }
+  });
+  const j = await r.json();
+  return j.staff || [];
+}
+
+async function saveStaff(staff) {
+  await fetch(`${PROXY}/admin/staff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Password': SA_PASS },
+    body: JSON.stringify({ staff }),
+  });
+}
+
+// ── PARSE AUDIT EMBED ───────────────────────────────────────────────
+function parseAuditEmbed(embed) {
+  // Title indicates action type
+  const title = embed.title || '';
+  let action = null;
+  if (title.includes('Підвищ')) action = 'promote';
+  else if (title.includes('Пониз')) action = 'demote';
+  else if (title.includes('Прийн')) action = 'hire';
+  else if (title.includes('Звільн')) action = 'fire';
+  if (!action) return null;
+
+  // Parse fields
+  const fields = embed.fields || [];
+  let workerField = fields.find(f => f.name?.includes('Працівник') || f.name?.includes('Worker'));
+  let rankField = fields.find(f => f.name?.includes('Ранг') || f.name?.includes('Rank'));
+
+  // Also try description
+  const desc = embed.description || '';
+
+  // Extract worker name and static
+  let name = '', staticId = '';
+  const workerText = workerField?.value || desc;
+  const workerMatch = workerText.match(/([A-Za-zА-ЯҐЄІЇа-яґєії\s']+)\s*#(\d+)/);
+  if (workerMatch) {
+    name = workerMatch[1].trim();
+    staticId = workerMatch[2].trim();
+  }
+
+  // Extract rank info
+  let rankText = rankField?.value || '';
+  // "3 4 ранг на 5 ранг" → toRank=5
+  // "Звільнений(-а) з 4 ранг" → fromRank=4
+  let toRank = null, fromRank = null;
+  const rankToMatch = rankText.match(/на\s*(\d+)\s*ранг/i);
+  const rankFromMatch = rankText.match(/з\s*(\d+)\s*ранг/i) || rankText.match(/(\d+)\s*ранг/i);
+  if (rankToMatch) toRank = parseInt(rankToMatch[1]);
+  if (rankFromMatch) fromRank = parseInt(rankFromMatch[1]);
+
+  return { action, name, staticId, toRank, fromRank, rankText };
+}
+
+// ── PROCESS AUDIT MESSAGE ───────────────────────────────────────────
+async function processAuditMessage(message) {
+  if (!message.embeds || !message.embeds.length) return;
+
+  for (const embed of message.embeds) {
+    const parsed = parseAuditEmbed(embed);
+    if (!parsed || !parsed.name || !parsed.staticId) continue;
+
+    const { action, name, staticId, toRank } = parsed;
+    console.log(`[AUDIT] ${action} | ${name} #${staticId} | rank→${toRank}`);
+
+    try {
+      const staff = await getStaff();
+
+      if (action === 'hire') {
+        // Add new worker
+        const exists = staff.find(s => s.static === staticId);
+        if (!exists) {
+          staff.push({
+            name,
+            static: staticId,
+            rank: RANK_NAMES[toRank || 1] || 'Студент (1)',
+            added: new Date().toLocaleDateString('uk-UA'),
+          });
+          await saveStaff(staff);
+          console.log(`[AUDIT] ✅ Added: ${name} #${staticId}`);
+        }
+      } else if (action === 'promote' || action === 'demote') {
+        // Update rank
+        const idx = staff.findIndex(s => s.static === staticId);
+        if (idx >= 0 && toRank) {
+          staff[idx].rank = RANK_NAMES[toRank] || `Ранг ${toRank}`;
+          await saveStaff(staff);
+          console.log(`[AUDIT] ✅ Updated rank: ${name} → ${staff[idx].rank}`);
+        } else if (idx < 0) {
+          // Not found — add them
+          staff.push({
+            name, static: staticId,
+            rank: RANK_NAMES[toRank] || `Ранг ${toRank}`,
+            added: new Date().toLocaleDateString('uk-UA'),
+          });
+          await saveStaff(staff);
+        }
+      } else if (action === 'fire') {
+        // Remove worker
+        const filtered = staff.filter(s => s.static !== staticId);
+        if (filtered.length < staff.length) {
+          await saveStaff(filtered);
+          console.log(`[AUDIT] ✅ Removed: ${name} #${staticId}`);
+        }
+      }
+    } catch (e) {
+      console.error('[AUDIT] Error processing:', e);
+    }
+  }
+}
+
+// ── READY ──────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot ready: ${client.user.tag}`);
-  
-  // Start reminder scheduler
   scheduleReminders();
-  
-  // Read audit channel on start
   await syncAuditChannel();
 });
 
-// ── ADD APPROVE BUTTONS TO REPORTS ────────────────────────────────────
+// ── LISTEN TO NEW AUDIT MESSAGES ───────────────────────────────────
 client.on(Events.MessageCreate, async (message) => {
-  if (!message.author.bot) return;
-  if (!message.webhookId) return;
-  
-  // Check if message is in a report channel and has embeds
-  if (!message.embeds.length) return;
-  
-  const embed = message.embeds[0];
-  if (!embed.title) return;
-  
-  // Only add buttons to report types that need approval
-  const needsApproval = [
-    '📈 Запит на підвищення',
-    '🌴 🟡 Відгул',
-    '🌴 🌴 Відпустка', 
-    '🚪 Запит на звільнення',
-    '⚠️ Дисциплінарне стягнення',
-    '✅ Зняття догани',
-    '🏆 Запит на преміювання',
-  ];
-  
-  const matches = needsApproval.some(t => embed.title.includes(t.replace(/^[^\w]*/, '').split(' ')[0]));
-  if (!matches) return;
-  
-  // Add approve/reject buttons
-  const approve = new ButtonBuilder()
-    .setCustomId('approve')
-    .setLabel('✅ Схвалено')
-    .setStyle(ButtonStyle.Success);
-    
-  const reject = new ButtonBuilder()
-    .setCustomId('reject')
-    .setLabel('❌ Відхилено')
-    .setStyle(ButtonStyle.Danger);
-    
-  const pending = new ButtonBuilder()
-    .setCustomId('pending')
-    .setLabel('⏳ На розгляді')
-    .setStyle(ButtonStyle.Secondary);
-    
-  const row = new ActionRowBuilder().addComponents(pending, approve, reject);
-  
-  try {
-    await message.edit({ components: [row] });
-  } catch(e) {
-    // If can't edit webhook message, send reply with buttons
-    await message.reply({ components: [row], content: '**Статус запиту:**' });
-  }
-});
-
-// ── BUTTON INTERACTIONS ────────────────────────────────────────────────
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isButton()) return;
-  
-  // Check if user has approver role
-  const member = interaction.member;
-  const hasRole = member.roles.cache.some(r => APPROVER_ROLES.includes(r.id));
-  
-  if (!hasRole) {
-    await interaction.reply({ 
-      content: '❌ У вас немає прав для схвалення/відхилення запитів.', 
-      ephemeral: true 
-    });
+  // Process new audit entries
+  if (message.channelId === AUDIT_CHANNEL_ID) {
+    await processAuditMessage(message);
     return;
   }
-  
-  const action = interaction.customId;
-  const user = interaction.user;
-  const now = new Date().toLocaleString('uk-UA', { 
-    day:'2-digit', month:'2-digit', year:'numeric',
-    hour:'2-digit', minute:'2-digit',
-    timeZone: 'Europe/Kyiv'
-  });
-  
-  let statusText, statusColor, emoji;
-  if (action === 'approve') {
-    statusText = 'Схвалено';
-    statusColor = 0x57f287;
-    emoji = '✅';
-  } else if (action === 'reject') {
-    statusText = 'Відхилено';
-    statusColor = 0xed4245;
-    emoji = '❌';
-  } else {
-    statusText = 'На розгляді';
-    statusColor = 0x99aab5;
-    emoji = '⏳';
-  }
-  
-  // Update buttons — disable approved/rejected
-  const approve = new ButtonBuilder()
-    .setCustomId('approve')
-    .setLabel('✅ Схвалено')
-    .setStyle(ButtonStyle.Success)
-    .setDisabled(action !== 'approve' ? true : false);
-    
-  const reject = new ButtonBuilder()
-    .setCustomId('reject')
-    .setLabel('❌ Відхилено')
-    .setStyle(ButtonStyle.Danger)
-    .setDisabled(action !== 'reject' ? true : false);
-    
-  const statusBtn = new ButtonBuilder()
-    .setCustomId('status')
-    .setLabel(`${emoji} ${statusText} — ${user.username} · ${now}`)
-    .setStyle(action === 'approve' ? ButtonStyle.Success : action === 'reject' ? ButtonStyle.Danger : ButtonStyle.Secondary)
-    .setDisabled(true);
-  
-  const row = new ActionRowBuilder().addComponents(statusBtn, approve, reject);
-  
-  await interaction.update({ components: [row] });
-  
-  // Send DM to the reporter if possible
-  try {
-    // Try to find the reporter from embed description
-    const embed = interaction.message.embeds[0];
-    if (embed && action !== 'pending') {
-      await interaction.followUp({
-        content: `${emoji} **${statusText}** · Запит розглянуто: **${interaction.user.displayName}**`,
-        ephemeral: false,
-      });
-    }
-  } catch(e) {}
+
+  // Add approve buttons to report webhooks
+  if (!message.author.bot || !message.webhookId) return;
+  if (!message.embeds.length) return;
+
+  const embed = message.embeds[0];
+  if (!embed?.title) return;
+
+  const needsApproval = ['підвищення', 'відпустк', 'відгул', 'звільнення', 'стягнення', 'зняття', 'преміювання'];
+  const matches = needsApproval.some(t => embed.title.toLowerCase().includes(t));
+  if (!matches) return;
+
+  const approve = new ButtonBuilder().setCustomId('approve').setLabel('✅ Схвалено').setStyle(ButtonStyle.Success);
+  const reject = new ButtonBuilder().setCustomId('reject').setLabel('❌ Відхилено').setStyle(ButtonStyle.Danger);
+  const pending = new ButtonBuilder().setCustomId('pending').setLabel('⏳ На розгляді').setStyle(ButtonStyle.Secondary).setDisabled(true);
+  const row = new ActionRowBuilder().addComponents(pending, approve, reject);
+
+  try { await message.reply({ components: [row], content: '**Статус запиту:**' }); }
+  catch(e) { console.log('Could not add buttons:', e.message); }
 });
 
-// ── SATURDAY REMINDER ─────────────────────────────────────────────────
+// ── BUTTON INTERACTIONS ────────────────────────────────────────────
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (interaction.customId === 'pending') return;
+
+  const member = interaction.member;
+  const hasRole = member.roles.cache.some(r => APPROVER_ROLES.includes(r.id));
+  if (!hasRole) {
+    await interaction.reply({ content: '❌ У вас немає прав для цієї дії.', ephemeral: true });
+    return;
+  }
+
+  const action = interaction.customId;
+  const user = interaction.user;
+  const now = new Date().toLocaleString('uk-UA', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit', timeZone:'Europe/Kyiv' });
+
+  const approve = new ButtonBuilder().setCustomId('approve').setLabel('✅ Схвалено').setStyle(ButtonStyle.Success).setDisabled(action !== 'approve');
+  const reject = new ButtonBuilder().setCustomId('reject').setLabel('❌ Відхилено').setStyle(ButtonStyle.Danger).setDisabled(action !== 'reject');
+  const statusBtn = new ButtonBuilder()
+    .setCustomId('status')
+    .setLabel(`${action === 'approve' ? '✅' : '❌'} ${action === 'approve' ? 'Схвалено' : 'Відхилено'} — ${user.username} · ${now}`)
+    .setStyle(action === 'approve' ? ButtonStyle.Success : ButtonStyle.Danger)
+    .setDisabled(true);
+
+  const row = new ActionRowBuilder().addComponents(statusBtn, approve, reject);
+  await interaction.update({ components: [row] });
+});
+
+// ── SYNC AUDIT CHANNEL ON START ────────────────────────────────────
+async function syncAuditChannel() {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const channel = await guild.channels.fetch(AUDIT_CHANNEL_ID);
+    if (!channel) { console.log('Audit channel not found'); return; }
+
+    console.log(`📋 Syncing audit channel: ${channel.name}`);
+    let lastId = null;
+    let totalProcessed = 0;
+
+    // Fetch in batches of 100
+    while (true) {
+      const options = { limit: 100 };
+      if (lastId) options.before = lastId;
+      const messages = await channel.messages.fetch(options);
+      if (!messages.size) break;
+
+      for (const [, msg] of messages) {
+        await processAuditMessage(msg);
+        totalProcessed++;
+      }
+
+      lastId = messages.last()?.id;
+      if (messages.size < 100) break;
+      // Rate limit protection
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    console.log(`✅ Audit sync done: processed ${totalProcessed} messages`);
+  } catch (e) {
+    console.error('Audit sync error:', e);
+  }
+}
+
+// ── SATURDAY REMINDER ──────────────────────────────────────────────
 function scheduleReminders() {
-  // Check every minute
   setInterval(async () => {
     const now = new Date();
-    // Convert to Kyiv time (UTC+3)
     const kyivHour = (now.getUTCHours() + 3) % 24;
     const kyivDay = new Date(now.getTime() + 3 * 3600000).getUTCDay();
     const kyivMin = now.getUTCMinutes();
-    
-    // Saturday 18:00 Kyiv — send reminder
-    if (kyivDay === REMINDER_DAY && kyivHour === REMINDER_HOUR_KYIV && kyivMin === 0) {
+    if (kyivDay === 6 && kyivHour === 18 && kyivMin === 0) {
       await sendSaturdayReminder();
     }
   }, 60000);
@@ -187,78 +260,22 @@ async function sendSaturdayReminder() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     const members = await guild.members.fetch();
-    
-    // Get all members with EMS roles (not bots)
-    const emsMemberRoles = [...APPROVER_ROLES]; // Add all EMS roles here
-    
     const embed = new EmbedBuilder()
       .setTitle('⏰ Нагадування про звіт на преміювання!')
       .setColor(0xfee75c)
-      .setDescription([
-        '**Сьогодні субота** — не забудь здати звіт на преміювання!',
-        '',
-        '⏳ Дедлайн: **20:00 за Київським часом**',
-        '📋 Форма: **ems-reports.pages.dev**',
-        '',
-        '🚫 Якщо не здаси до 20:00 — премія анулюється',
-      ].join('\n'))
-      .setFooter({ text: 'EMS — Система Звітності' })
+      .setDescription('**Сьогодні субота** — не забудь здати звіт!\n\n⏳ Дедлайн: **20:00 Київ**\n📋 Форма: **ems-reports.pages.dev**')
       .setTimestamp();
-    
-    // Send to members with EMS roles
+
     let sent = 0;
     for (const [, member] of members) {
       if (member.user.bot) continue;
-      const hasEmsRole = member.roles.cache.some(r => emsMemberRoles.includes(r.id));
-      if (!hasEmsRole) continue;
-      try {
-        await member.send({ embeds: [embed] });
-        sent++;
-        // Rate limit protection
-        await new Promise(r => setTimeout(r, 500));
-      } catch(e) {
-        // DM disabled — skip
-      }
+      const hasRole = member.roles.cache.some(r => APPROVER_ROLES.includes(r.id));
+      if (!hasRole) continue;
+      try { await member.send({ embeds: [embed] }); sent++; await new Promise(r => setTimeout(r, 500)); }
+      catch(e) {}
     }
     console.log(`Saturday reminder sent to ${sent} members`);
-  } catch(e) {
-    console.error('Reminder error:', e);
-  }
+  } catch (e) { console.error('Reminder error:', e); }
 }
 
-// ── AUDIT CHANNEL SYNC ────────────────────────────────────────────────
-async function syncAuditChannel() {
-  try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const channel = await guild.channels.fetch(AUDIT_CHANNEL_ID);
-    if (!channel) return;
-    
-    console.log(`📋 Audit channel: ${channel.name}`);
-    // Fetch last 100 messages
-    const messages = await channel.messages.fetch({ limit: 100 });
-    console.log(`Found ${messages.size} messages in audit channel`);
-    
-    // Parse staff from messages — format depends on your audit channel structure
-    // You can customize this parser based on how your audit channel is formatted
-    const staff = [];
-    messages.forEach(msg => {
-      // Simple parser — adjust regex to match your audit format
-      const match = msg.content.match(/([A-Za-zА-ЯҐЄІЇа-яґєії\s]+)\s*[|·]\s*#?(\d+)/);
-      if (match) {
-        staff.push({
-          name: match[1].trim(),
-          static: match[2].trim(),
-        });
-      }
-    });
-    
-    if (staff.length) {
-      console.log(`Parsed ${staff.length} staff from audit channel`);
-    }
-  } catch(e) {
-    console.error('Audit sync error:', e);
-  }
-}
-
-// ── LOGIN ──────────────────────────────────────────────────────────────
 client.login(TOKEN);
