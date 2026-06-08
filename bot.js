@@ -255,33 +255,33 @@ async function syncAuditChannel() {
     if (!channel) { console.log('Channel not found'); return; }
     console.log(`📋 Syncing: ${channel.name}`);
 
-    let lastId = null, total = 0, parsed = 0;
+    // Collect ALL new-format messages first
+    const allMessages = [];
+    let lastId = null;
     while (true) {
       const opts = { limit: 100 };
       if (lastId) opts.before = lastId;
       const messages = await channel.messages.fetch(opts);
       if (!messages.size) break;
       for (const [, msg] of messages) {
-        if (msg.embeds?.length) {
-        const hasNew = msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')));
-        if (hasNew) {
-          if (parsed < 5) {
-            msg.embeds.forEach(e => {
-              console.log(`[DEBUG] fields: ${JSON.stringify(e.fields?.map(f=>f.name))}`);
-              console.log(`[DEBUG] values: ${JSON.stringify(e.fields?.map(f=>({n:f.name,v:f.value?.slice(0,50)})))}`);
-            });
-          }
-          await processAuditMessage(msg);
-          parsed++;
+        if (msg.embeds?.length && msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')))) {
+          allMessages.push(msg);
         }
-      }
-      total++;
       }
       lastId = messages.last()?.id;
       if (messages.size < 100) break;
       await new Promise(r => setTimeout(r, 500));
     }
-    console.log(`✅ Sync done: ${total} messages, ${parsed} new-format parsed`);
+
+    // Sort oldest → newest and process in order
+    allMessages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+    console.log(`Found ${allMessages.length} new-format messages, processing oldest→newest`);
+
+    for (const msg of allMessages) {
+      await processAuditMessage(msg);
+    }
+
+    console.log(`✅ Sync done: ${allMessages.length} messages processed`);
   } catch(e) { console.error('Sync error:', e.message); }
 }
 
