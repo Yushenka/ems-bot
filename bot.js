@@ -8,7 +8,18 @@ const PROXY = 'https://ems-proxy.mirely1234.workers.dev';
 const SA_PASS = process.env.SA_PASS || 'YUSHA_SUPERADMIN';
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.writeHead(200); res.end('EMS Bot OK'); }).listen(PORT, () => console.log(`HTTP on ${PORT}`));
+http.createServer(async (req, res) => {
+  // Keep-alive ping also checks bot status
+  const status = client.isReady() ? 'online' : 'offline';
+  res.writeHead(200, {'Content-Type':'application/json'});
+  res.end(JSON.stringify({ status, uptime: process.uptime() }));
+  
+  // If bot disconnected - reconnect
+  if (!client.isReady()) {
+    console.log('[PING] Bot offline, reconnecting...');
+    try { await client.login(TOKEN); } catch(e) { console.error('Reconnect failed:', e.message); }
+  }
+}).listen(PORT, () => console.log(`HTTP on ${PORT}`));
 
 const APPROVER_ROLES = ['1328668577082904630','1041467317353193472'];
 
