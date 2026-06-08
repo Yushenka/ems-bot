@@ -268,8 +268,17 @@ async function syncAuditChannel() {
       if (!messages.size) break;
       for (const [, msg] of messages) {
         if (msg.embeds?.length) {
+        const hasNew = msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')));
+        if (hasNew) {
+          // Log first 5 new-format messages for debugging
+          if (parsed < 5) {
+            msg.embeds.forEach(e => {
+              console.log(`[DEBUG] fields: ${JSON.stringify(e.fields?.map(f=>f.name))}`);
+              console.log(`[DEBUG] values: ${JSON.stringify(e.fields?.map(f=>({n:f.name,v:f.value?.slice(0,50)})))}`);
+            });
+          }
           await processAuditMessage(msg);
-          if (msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')))) parsed++;
+          parsed++;
         }
         total++;
       }
