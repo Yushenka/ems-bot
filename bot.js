@@ -48,55 +48,47 @@ async function saveStaff(staff) {
   } catch(e) { console.error('saveStaff error:', e.message); }
 }
 
-// ── PARSE NEW FORMAT ───────────────────────────────────────────────────
-// New Swarovski bot format has fields: Дія, Працівник, Ранг
 function parseNewFormat(embed) {
   const fields = embed.fields || [];
   if (!fields.length) return null;
 
-  // Find key fields
-  const diaField    = fields.find(f => f.name && (f.name.includes('Дія') || f.name.includes('Дiя')));
-  const workerField = fields.find(f => f.name && (f.name.includes('Працівник') || f.name.includes('Працiвник')));
-  const rankField   = fields.find(f => f.name && f.name.includes('Ранг'));
+  // Helper to clean markdown bold and backticks
+  const clean = s => (s||'').replace(/\*\*/g,'').replace(/`/g,'').trim();
+
+  // Find fields by partial name match (emoji prefix varies)
+  const diaField    = fields.find(f => f.name?.includes('Дія') || f.name?.includes('Дiя'));
+  const workerField = fields.find(f => f.name?.includes('Працівник') || f.name?.includes('Працiвник'));
+  const rankField   = fields.find(f => f.name?.includes('Ранг'));
 
   if (!workerField) return null;
 
   // Parse action
-  const dia = (diaField?.value || '').trim();
+  const dia = clean(diaField?.value || '');
   let action = null;
   if (dia.includes('Підвищив') || dia.includes('Пiдвищив')) action = 'promote';
   else if (dia.includes('Понизив')) action = 'demote';
   else if (dia.includes('Прийняв')) action = 'hire';
   else if (dia.includes('Звільнив') || dia.includes('Звiльнив')) action = 'fire';
-  if (!action) {
-    // Try title
-    const title = embed.title || '';
-    if (title.includes('Підвищ')) action = 'promote';
-    else if (title.includes('Пониз')) action = 'demote';
-    else if (title.includes('Прийн')) action = 'hire';
-    else if (title.includes('Звільн')) action = 'fire';
-  }
   if (!action) return null;
 
-  // Parse worker "Name #12345"
-  const workerText = (workerField.value || '').replace(/`/g,'').trim();
+  // Parse worker — clean bold: "**Artem Win #847**" → "Artem Win #847"
+  const workerText = clean(workerField.value || '');
   const workerMatch = workerText.match(/^(.+?)\s*#(\d+)$/);
   if (!workerMatch) return null;
   const name = workerMatch[1].trim();
   const staticId = workerMatch[2].trim();
 
-  // Parse rank number from rank field
-  const rankText = (rankField?.value || '').replace(/`/g,'').trim();
+  // Parse rank — "З **2 ранг** на **3 ранг**" → toRank=3
+  // "Звільнений(-а) з **3 ранг**" → fromRank=3
+  const rankText = clean(rankField?.value || '');
   let toRank = null;
-  // "3 ранг на 5 ранг" or "Прийнятий на 3 ранг"
-  const rankToMatch = rankText.match(/на\s*(\d+)\s*ранг/i);
-  if (rankToMatch) toRank = parseInt(rankToMatch[1]);
-  else {
-    // Get last number in string
+  const rankToMatch = rankText.match(/на\s+(\d+)\s+ранг/i);
+  if (rankToMatch) {
+    toRank = parseInt(rankToMatch[1]);
+  } else {
+    // For hire: get any rank number
     const nums = rankText.match(/\d+/g);
-    if (nums && (action === 'hire' || action === 'promote' || action === 'demote')) {
-      toRank = parseInt(nums[nums.length - 1]);
-    }
+    if (nums && action === 'hire') toRank = parseInt(nums[0]);
   }
 
   return { action, name, staticId, toRank, rankText };
