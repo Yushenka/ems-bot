@@ -1,32 +1,23 @@
 const { Client, GatewayIntentBits, Events, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } = require('discord.js');
 const http = require('http');
 
-// Keep-alive HTTP server for Render
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('EMS Bot running');
-}).listen(PORT, () => console.log(`HTTP server on port ${PORT}`));
-
 const TOKEN = process.env.BOT_TOKEN;
 const GUILD_ID = '1041454652782280784';
 const AUDIT_CHANNEL_ID = '1329418908234682428';
 const PROXY = 'https://ems-proxy.mirely1234.workers.dev';
-
-// SA password for KV writes
 const SA_PASS = process.env.SA_PASS || 'YUSHA_SUPERADMIN';
 
-const APPROVER_ROLES = [
-  '1328668577082904630', // Головний лікар
-  '1041467317353193472', // Заступник головного лікаря
-];
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => { res.writeHead(200); res.end('EMS Bot OK'); }).listen(PORT, () => console.log(`HTTP on ${PORT}`));
 
-// Rank map — number to name
+const APPROVER_ROLES = ['1328668577082904630','1041467317353193472'];
+
+// Rank names map
 const RANK_NAMES = {
-  1: 'Студент (1)', 2: 'Інтерн (2)', 3: 'Парамедик (3)',
-  4: 'Фельдшер (4)', 5: 'Терапевт (5)', 6: 'Хірург (6)',
-  7: 'Спеціаліст (7)', 8: 'Заст. Завід. (8)', 9: 'Завідувач (9)',
-  10: 'Заст. Гол. Лікаря (10)', 11: 'Головний Лікар',
+  1:'Студент (1)', 2:'Інтерн (2)', 3:'Парамедик (3)',
+  4:'Фельдшер (4)', 5:'Терапевт (5)', 6:'Хірург (6)',
+  7:'Спеціаліст (7)', 8:'Заст. Завід. (8)', 9:'Завідувач (9)',
+  10:'Заст. Гол. Лікаря (10)', 11:'Головний Лікар',
 };
 
 const client = new Client({
@@ -38,268 +29,287 @@ const client = new Client({
   ],
 });
 
-// ── KV HELPERS ─────────────────────────────────────────────────────
+// ── KV ────────────────────────────────────────────────────────────────
 async function getStaff() {
-  const r = await fetch(`${PROXY}/admin/staff`, {
-    headers: { 'X-Admin-Password': SA_PASS }
-  });
-  const j = await r.json();
-  return j.staff || [];
+  try {
+    const r = await fetch(`${PROXY}/admin/staff`, { headers: { 'X-Admin-Password': SA_PASS } });
+    const j = await r.json();
+    return j.staff || [];
+  } catch(e) { console.error('getStaff error:', e.message); return []; }
 }
 
 async function saveStaff(staff) {
-  await fetch(`${PROXY}/admin/staff`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Admin-Password': SA_PASS },
-    body: JSON.stringify({ staff }),
-  });
+  try {
+    await fetch(`${PROXY}/admin/staff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Password': SA_PASS },
+      body: JSON.stringify({ staff }),
+    });
+  } catch(e) { console.error('saveStaff error:', e.message); }
 }
 
-// ── PARSE AUDIT EMBED ───────────────────────────────────────────────
-// Cutoff date: May 22, 2026
-const SYNC_CUTOFF = new Date('2026-05-22T00:00:00+03:00').getTime();
-
-function parseAuditEmbed(embed, messageTimestamp) {
-  // Only process messages after May 22, 2026
-  if (messageTimestamp && messageTimestamp < SYNC_CUTOFF) return null;
-
+// ── PARSE NEW FORMAT ───────────────────────────────────────────────────
+// New Swarovski bot format has fields: Дія, Працівник, Ранг
+function parseNewFormat(embed) {
   const fields = embed.fields || [];
+  if (!fields.length) return null;
 
-  // New format: has "Дія" and "Працівник" fields (Swarovski bot)
-  const diaField = fields.find(f => f.name?.includes('Дія') || f.name?.includes('Дiя'));
-  const workerField = fields.find(f => f.name?.includes('Працівник') || f.name?.includes('Працiвник'));
-  const rankField = fields.find(f => f.name?.includes('Ранг'));
+  // Find key fields
+  const diaField    = fields.find(f => f.name && (f.name.includes('Дія') || f.name.includes('Дiя')));
+  const workerField = fields.find(f => f.name && (f.name.includes('Працівник') || f.name.includes('Працiвник')));
+  const rankField   = fields.find(f => f.name && f.name.includes('Ранг'));
 
-  if (!diaField || !workerField) return null;
+  if (!workerField) return null;
 
   // Parse action
-  const diaText = diaField.value || '';
+  const dia = (diaField?.value || '').trim();
   let action = null;
-  if (diaText.includes('Підвищив') || diaText.includes('Пiдвищив')) action = 'promote';
-  else if (diaText.includes('Понизив')) action = 'demote';
-  else if (diaText.includes('Прийняв')) action = 'hire';
-  else if (diaText.includes('Звільнив') || diaText.includes('Звiльнив')) action = 'fire';
+  if (dia.includes('Підвищив') || dia.includes('Пiдвищив')) action = 'promote';
+  else if (dia.includes('Понизив')) action = 'demote';
+  else if (dia.includes('Прийняв')) action = 'hire';
+  else if (dia.includes('Звільнив') || dia.includes('Звiльнив')) action = 'fire';
+  if (!action) {
+    // Try title
+    const title = embed.title || '';
+    if (title.includes('Підвищ')) action = 'promote';
+    else if (title.includes('Пониз')) action = 'demote';
+    else if (title.includes('Прийн')) action = 'hire';
+    else if (title.includes('Звільн')) action = 'fire';
+  }
   if (!action) return null;
 
-  // Parse worker name and static from "Artem Win #847"
-  const workerText = (workerField.value || '').trim();
+  // Parse worker "Name #12345"
+  const workerText = (workerField.value || '').replace(/`/g,'').trim();
   const workerMatch = workerText.match(/^(.+?)\s*#(\d+)$/);
   if (!workerMatch) return null;
   const name = workerMatch[1].trim();
   const staticId = workerMatch[2].trim();
 
-  // Parse rank from rank field
-  const rankText = (rankField?.value || '').trim();
-  // "3 4 ранг на 5 ранг" → toRank=5
-  // "Звільнений(-а) з 3 ранг" → fromRank=3
-  // "Прийнятий(-а) на 1 ранг" → toRank=1
+  // Parse rank number from rank field
+  const rankText = (rankField?.value || '').replace(/`/g,'').trim();
   let toRank = null;
+  // "3 ранг на 5 ранг" or "Прийнятий на 3 ранг"
   const rankToMatch = rankText.match(/на\s*(\d+)\s*ранг/i);
-  const rankDirectMatch = rankText.match(/(\d+)\s*ранг\s*$/i);
   if (rankToMatch) toRank = parseInt(rankToMatch[1]);
-  else if (rankDirectMatch && (action === 'hire' || action === 'promote' || action === 'demote')) {
-    // Try to get the last rank number
+  else {
+    // Get last number in string
     const nums = rankText.match(/\d+/g);
-    if (nums) toRank = parseInt(nums[nums.length - 1]);
+    if (nums && (action === 'hire' || action === 'promote' || action === 'demote')) {
+      toRank = parseInt(nums[nums.length - 1]);
+    }
   }
 
   return { action, name, staticId, toRank, rankText };
 }
 
-// ── PROCESS AUDIT MESSAGE ───────────────────────────────────────────
+// ── PARSE OLD FORMAT (title-based) ────────────────────────────────────
+function parseOldFormat(embed) {
+  const title = embed.title || '';
+  const fields = embed.fields || [];
+
+  let action = null;
+  if (title.includes('ПРИЙНЯТО')) action = 'hire';
+  else if (title.includes('ЗВІЛЬНЕНО')) action = 'fire';
+  else if (title.includes('ПЕРЕВЕДЕНО') || title.includes('ДОВІРЕНА')) action = 'promote';
+  if (!action) return null;
+
+  // Find rank change field "🔁 Зміна посади" or "🔄 Зміна посади"
+  const changeField = fields.find(f => f.name && (f.name.includes('Зміна') || f.name.includes('Змiна')));
+  if (!changeField) return null;
+
+  // Extract rank number from "[N] Name"
+  const rankNums = (changeField.value || '').match(/\[(\d+)\]\s*[^`]+`?\s*(?:➡️|🟢|🔴)/g);
+  let toRank = null;
+  // Get the LAST rank mentioned (destination)
+  const allNums = [...(changeField.value || '').matchAll(/\[(\d+)\]/g)];
+  if (allNums.length > 0) {
+    toRank = parseInt(allNums[allNums.length - 1][1]);
+  }
+
+  // No name/static in old format - skip for staff updates
+  // Old format doesn't have worker identity - we can't update staff
+  return null;
+}
+
+// ── PROCESS MESSAGE ────────────────────────────────────────────────────
 async function processAuditMessage(message) {
   if (!message.embeds || !message.embeds.length) return;
 
-  const msgTs = message.createdTimestamp;
-
   for (const embed of message.embeds) {
-    // Log only new format messages for debugging
-    if (msgTs >= SYNC_CUTOFF) {
-      console.log(`[NEW AUDIT] ts=${msgTs} title="${embed.title}" fields=${JSON.stringify(embed.fields?.map(f=>({n:f.name,v:f.value})))}`);
-    }
-    const parsed = parseAuditEmbed(embed, msgTs);
-    if (!parsed || !parsed.name || !parsed.staticId) continue;
+    // Try new format first (has Працівник field)
+    let parsed = parseNewFormat(embed);
 
-    const { action, name, staticId, toRank } = parsed;
-    console.log(`[AUDIT] ${action} | ${name} #${staticId} | rank→${toRank}`);
+    // Log every parsed result
+    if (parsed) {
+      console.log(`[AUDIT] ${parsed.action} | ${parsed.name} #${parsed.staticId} | rank=${parsed.toRank}`);
+    }
+
+    if (!parsed || !parsed.name || !parsed.staticId) continue;
 
     try {
       const staff = await getStaff();
+      const idx = staff.findIndex(s => s.static === parsed.staticId);
 
-      if (action === 'hire') {
-        // Add new worker
-        const exists = staff.find(s => s.static === staticId);
-        if (!exists) {
+      if (parsed.action === 'fire') {
+        // Remove from staff
+        if (idx >= 0) {
+          staff.splice(idx, 1);
+          await saveStaff(staff);
+          console.log(`[AUDIT] ✅ Removed: ${parsed.name} #${parsed.staticId}`);
+        }
+      } else if (parsed.action === 'hire') {
+        if (idx < 0) {
+          // Add new worker - only save rank if 8+
+          const rankName = parsed.toRank >= 8 ? (RANK_NAMES[parsed.toRank] || `Ранг ${parsed.toRank}`) : '';
           staff.push({
-            name,
-            static: staticId,
-            rank: RANK_NAMES[toRank || 1] || 'Студент (1)',
+            name: parsed.name,
+            static: parsed.staticId,
+            rank: rankName || (RANK_NAMES[parsed.toRank] || 'Студент (1)'),
             added: new Date().toLocaleDateString('uk-UA'),
           });
           await saveStaff(staff);
-          console.log(`[AUDIT] ✅ Added: ${name} #${staticId}`);
+          console.log(`[AUDIT] ✅ Added: ${parsed.name} #${parsed.staticId} rank=${rankName}`);
+        } else {
+          // Update rank if rehired
+          if (parsed.toRank) {
+            staff[idx].rank = RANK_NAMES[parsed.toRank] || staff[idx].rank;
+            await saveStaff(staff);
+          }
         }
-      } else if (action === 'promote' || action === 'demote') {
-        // Update rank
-        const idx = staff.findIndex(s => s.static === staticId);
-        if (idx >= 0 && toRank) {
-          staff[idx].rank = RANK_NAMES[toRank] || `Ранг ${toRank}`;
-          await saveStaff(staff);
-          console.log(`[AUDIT] ✅ Updated rank: ${name} → ${staff[idx].rank}`);
-        } else if (idx < 0) {
-          // Not found — add them
-          staff.push({
-            name, static: staticId,
-            rank: RANK_NAMES[toRank] || `Ранг ${toRank}`,
-            added: new Date().toLocaleDateString('uk-UA'),
-          });
-          await saveStaff(staff);
-        }
-      } else if (action === 'fire') {
-        // Remove worker
-        const filtered = staff.filter(s => s.static !== staticId);
-        if (filtered.length < staff.length) {
-          await saveStaff(filtered);
-          console.log(`[AUDIT] ✅ Removed: ${name} #${staticId}`);
+      } else if (parsed.action === 'promote' || parsed.action === 'demote') {
+        if (idx >= 0) {
+          if (parsed.toRank) {
+            staff[idx].rank = RANK_NAMES[parsed.toRank] || `Ранг ${parsed.toRank}`;
+            await saveStaff(staff);
+            console.log(`[AUDIT] ✅ Rank updated: ${parsed.name} → ${staff[idx].rank}`);
+          }
+        } else {
+          // Not found - add them
+          if (parsed.toRank) {
+            staff.push({
+              name: parsed.name,
+              static: parsed.staticId,
+              rank: RANK_NAMES[parsed.toRank] || `Ранг ${parsed.toRank}`,
+              added: new Date().toLocaleDateString('uk-UA'),
+            });
+            await saveStaff(staff);
+            console.log(`[AUDIT] ✅ Added (from promote): ${parsed.name} #${parsed.staticId}`);
+          }
         }
       }
-    } catch (e) {
-      console.error('[AUDIT] Error processing:', e);
+    } catch(e) {
+      console.error('[AUDIT] Error:', e.message);
     }
   }
 }
 
-// ── READY ──────────────────────────────────────────────────────────
+// ── READY ──────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot ready: ${client.user.tag}`);
   scheduleReminders();
   await syncAuditChannel();
 });
 
-// ── LISTEN TO NEW AUDIT MESSAGES ───────────────────────────────────
+// ── NEW MESSAGES ───────────────────────────────────────────────────────
 client.on(Events.MessageCreate, async (message) => {
-  // Process new audit entries
   if (message.channelId === AUDIT_CHANNEL_ID) {
     await processAuditMessage(message);
     return;
   }
 
-  // Add approve buttons to report webhooks
   if (!message.author.bot || !message.webhookId) return;
   if (!message.embeds.length) return;
-
   const embed = message.embeds[0];
   if (!embed?.title) return;
 
-  const needsApproval = ['підвищення', 'відпустк', 'відгул', 'звільнення', 'стягнення', 'зняття', 'преміювання'];
-  const matches = needsApproval.some(t => embed.title.toLowerCase().includes(t));
-  if (!matches) return;
+  const needsApproval = ['підвищення','відпустк','відгул','звільнення','стягнення','зняття','преміювання'];
+  if (!needsApproval.some(t => embed.title.toLowerCase().includes(t))) return;
 
   const approve = new ButtonBuilder().setCustomId('approve').setLabel('✅ Схвалено').setStyle(ButtonStyle.Success);
-  const reject = new ButtonBuilder().setCustomId('reject').setLabel('❌ Відхилено').setStyle(ButtonStyle.Danger);
+  const reject  = new ButtonBuilder().setCustomId('reject').setLabel('❌ Відхилено').setStyle(ButtonStyle.Danger);
   const pending = new ButtonBuilder().setCustomId('pending').setLabel('⏳ На розгляді').setStyle(ButtonStyle.Secondary).setDisabled(true);
   const row = new ActionRowBuilder().addComponents(pending, approve, reject);
-
-  try { await message.reply({ components: [row], content: '**Статус запиту:**' }); }
-  catch(e) { console.log('Could not add buttons:', e.message); }
+  try { await message.reply({ components: [row], content: '**Статус запиту:**' }); } catch(e) {}
 });
 
-// ── BUTTON INTERACTIONS ────────────────────────────────────────────
+// ── BUTTONS ─────────────────────────────────────────────────────────────
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isButton()) return;
   if (interaction.customId === 'pending') return;
-
   const member = interaction.member;
   const hasRole = member.roles.cache.some(r => APPROVER_ROLES.includes(r.id));
-  if (!hasRole) {
-    await interaction.reply({ content: '❌ У вас немає прав для цієї дії.', ephemeral: true });
-    return;
-  }
+  if (!hasRole) { await interaction.reply({ content:'❌ Немає прав.', ephemeral:true }); return; }
 
   const action = interaction.customId;
   const user = interaction.user;
-  const now = new Date().toLocaleString('uk-UA', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit', timeZone:'Europe/Kyiv' });
+  const now = new Date().toLocaleString('uk-UA',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Kyiv'});
+  const emoji = action==='approve'?'✅':'❌';
+  const label = action==='approve'?'Схвалено':'Відхилено';
 
-  const approve = new ButtonBuilder().setCustomId('approve').setLabel('✅ Схвалено').setStyle(ButtonStyle.Success).setDisabled(action !== 'approve');
-  const reject = new ButtonBuilder().setCustomId('reject').setLabel('❌ Відхилено').setStyle(ButtonStyle.Danger).setDisabled(action !== 'reject');
-  const statusBtn = new ButtonBuilder()
-    .setCustomId('status')
-    .setLabel(`${action === 'approve' ? '✅' : '❌'} ${action === 'approve' ? 'Схвалено' : 'Відхилено'} — ${user.username} · ${now}`)
-    .setStyle(action === 'approve' ? ButtonStyle.Success : ButtonStyle.Danger)
-    .setDisabled(true);
-
-  const row = new ActionRowBuilder().addComponents(statusBtn, approve, reject);
-  await interaction.update({ components: [row] });
+  const approve = new ButtonBuilder().setCustomId('approve').setLabel('✅ Схвалено').setStyle(ButtonStyle.Success).setDisabled(action!=='approve');
+  const reject  = new ButtonBuilder().setCustomId('reject').setLabel('❌ Відхилено').setStyle(ButtonStyle.Danger).setDisabled(action!=='reject');
+  const statusBtn = new ButtonBuilder().setCustomId('status').setLabel(`${emoji} ${label} — ${user.username} · ${now}`).setStyle(action==='approve'?ButtonStyle.Success:ButtonStyle.Danger).setDisabled(true);
+  await interaction.update({ components:[new ActionRowBuilder().addComponents(statusBtn,approve,reject)] });
 });
 
-// ── SYNC AUDIT CHANNEL ON START ────────────────────────────────────
+// ── SYNC ───────────────────────────────────────────────────────────────
 async function syncAuditChannel() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     const channel = await guild.channels.fetch(AUDIT_CHANNEL_ID);
-    if (!channel) { console.log('Audit channel not found'); return; }
+    if (!channel) { console.log('Channel not found'); return; }
+    console.log(`📋 Syncing: ${channel.name}`);
 
-    console.log(`📋 Syncing audit channel: ${channel.name}`);
-    let lastId = null;
-    let totalProcessed = 0;
-
-    // Fetch in batches of 100
+    let lastId = null, total = 0, parsed = 0;
     while (true) {
-      const options = { limit: 100 };
-      if (lastId) options.before = lastId;
-      const messages = await channel.messages.fetch(options);
+      const opts = { limit: 100 };
+      if (lastId) opts.before = lastId;
+      const messages = await channel.messages.fetch(opts);
       if (!messages.size) break;
-
       for (const [, msg] of messages) {
-        await processAuditMessage(msg);
-        totalProcessed++;
+        if (msg.embeds?.length) {
+          await processAuditMessage(msg);
+          if (msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')))) parsed++;
+        }
+        total++;
       }
-
       lastId = messages.last()?.id;
       if (messages.size < 100) break;
-      // Rate limit protection
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 500));
     }
-
-    console.log(`✅ Audit sync done: processed ${totalProcessed} messages`);
-  } catch (e) {
-    console.error('Audit sync error:', e);
-  }
+    console.log(`✅ Sync done: ${total} messages, ${parsed} new-format parsed`);
+  } catch(e) { console.error('Sync error:', e.message); }
 }
 
-// ── SATURDAY REMINDER ──────────────────────────────────────────────
+// ── REMINDERS ─────────────────────────────────────────────────────────
 function scheduleReminders() {
   setInterval(async () => {
     const now = new Date();
     const kyivHour = (now.getUTCHours() + 3) % 24;
-    const kyivDay = new Date(now.getTime() + 3 * 3600000).getUTCDay();
-    const kyivMin = now.getUTCMinutes();
-    if (kyivDay === 6 && kyivHour === 18 && kyivMin === 0) {
-      await sendSaturdayReminder();
+    const kyivDay = new Date(now.getTime() + 3*3600000).getUTCDay();
+    if (kyivDay === 6 && kyivHour === 18 && now.getUTCMinutes() === 0) {
+      await sendReminder();
     }
   }, 60000);
 }
 
-async function sendSaturdayReminder() {
+async function sendReminder() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     const members = await guild.members.fetch();
     const embed = new EmbedBuilder()
-      .setTitle('⏰ Нагадування про звіт на преміювання!')
+      .setTitle('⏰ Нагадування про звіт!')
       .setColor(0xfee75c)
-      .setDescription('**Сьогодні субота** — не забудь здати звіт!\n\n⏳ Дедлайн: **20:00 Київ**\n📋 Форма: **ems-reports.pages.dev**')
+      .setDescription('**Сьогодні субота** — здай звіт до 20:00!\n📋 **ems-reports.pages.dev**')
       .setTimestamp();
-
     let sent = 0;
-    for (const [, member] of members) {
-      if (member.user.bot) continue;
-      const hasRole = member.roles.cache.some(r => APPROVER_ROLES.includes(r.id));
-      if (!hasRole) continue;
-      try { await member.send({ embeds: [embed] }); sent++; await new Promise(r => setTimeout(r, 500)); }
-      catch(e) {}
+    for (const [, m] of members) {
+      if (m.user.bot) continue;
+      if (!m.roles.cache.some(r => APPROVER_ROLES.includes(r.id))) continue;
+      try { await m.send({ embeds:[embed] }); sent++; await new Promise(r=>setTimeout(r,500)); } catch(e){}
     }
-    console.log(`Saturday reminder sent to ${sent} members`);
-  } catch (e) { console.error('Reminder error:', e); }
+    console.log(`Reminder sent to ${sent}`);
+  } catch(e) { console.error('Reminder error:', e); }
 }
 
 client.login(TOKEN);
