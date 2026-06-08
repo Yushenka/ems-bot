@@ -140,7 +140,10 @@ async function processAuditMessage(message) {
 
     try {
       const staff = await getStaff();
-      const idx = staff.findIndex(s => s.static === parsed.staticId);
+      const idx = staff.findIndex(s => {
+        const sStatic = (s.static||'').replace('#','').trim();
+        return sStatic === parsed.staticId;
+      });
 
       if (parsed.action === 'fire') {
         // Remove from staff
