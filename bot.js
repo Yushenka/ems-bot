@@ -214,6 +214,8 @@ client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot ready: ${client.user.tag}`);
   scheduleReminders();
   await syncAuditChannel();
+  // Poll for new messages every 2 minutes
+  setInterval(pollNewMessages, 2 * 60 * 1000);
 });
 
 // ── NEW MESSAGES ───────────────────────────────────────────────────────
@@ -259,41 +261,78 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 // ── SYNC ───────────────────────────────────────────────────────────────
+const SYNC_CUTOFF = new Date('2026-06-07T00:00:00+03:00').getTime();
+let lastProcessedId = null; // Track last processed message ID
+
 async function syncAuditChannel() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     const channel = await guild.channels.fetch(AUDIT_CHANNEL_ID);
     if (!channel) { console.log('Channel not found'); return; }
-    console.log(`📋 Syncing: ${channel.name}`);
+    console.log(`📋 Syncing: ${channel.name} (from 07.06.2026)`);
 
-    // Collect ALL new-format messages first
     const allMessages = [];
     let lastId = null;
-    while (true) {
+    let reachedCutoff = false;
+
+    while (!reachedCutoff) {
       const opts = { limit: 100 };
       if (lastId) opts.before = lastId;
       const messages = await channel.messages.fetch(opts);
       if (!messages.size) break;
+
       for (const [, msg] of messages) {
+        if (msg.createdTimestamp < SYNC_CUTOFF) { reachedCutoff = true; break; }
         if (msg.embeds?.length && msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')))) {
           allMessages.push(msg);
         }
       }
+
       lastId = messages.last()?.id;
       if (messages.size < 100) break;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 300));
     }
 
-    // Sort oldest → newest and process in order
     allMessages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-    console.log(`Found ${allMessages.length} new-format messages, processing oldest→newest`);
+    console.log(`Found ${allMessages.length} messages, processing oldest→newest`);
 
     for (const msg of allMessages) {
       await processAuditMessage(msg);
     }
 
-    console.log(`✅ Sync done: ${allMessages.length} messages processed`);
+    // Remember last processed message
+    if (allMessages.length > 0) {
+      lastProcessedId = allMessages[allMessages.length - 1].id;
+    }
+
+    console.log(`✅ Sync done: ${allMessages.length} messages`);
   } catch(e) { console.error('Sync error:', e.message); }
+}
+
+// Check for new messages every 2 minutes
+async function pollNewMessages() {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const channel = await guild.channels.fetch(AUDIT_CHANNEL_ID);
+    if (!channel) return;
+
+    const opts = { limit: 20 };
+    if (lastProcessedId) opts.after = lastProcessedId;
+    const messages = await channel.messages.fetch(opts);
+    if (!messages.size) return;
+
+    const newMsgs = [...messages.values()]
+      .filter(m => m.embeds?.some(e => e.fields?.find(f => f.name?.includes('Працівник'))))
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    if (newMsgs.length) {
+      console.log(`[POLL] ${newMsgs.length} new messages`);
+      for (const msg of newMsgs) {
+        await processAuditMessage(msg);
+      }
+      lastProcessedId = newMsgs[newMsgs.length - 1].id;
+    }
+  } catch(e) { console.error('Poll error:', e.message); }
 }
 
 // ── REMINDERS ─────────────────────────────────────────────────────────
