@@ -270,7 +270,6 @@ async function syncAuditChannel() {
         if (msg.embeds?.length) {
         const hasNew = msg.embeds.some(e => e.fields?.find(f => f.name?.includes('Працівник')));
         if (hasNew) {
-          // Log first 5 new-format messages for debugging
           if (parsed < 5) {
             msg.embeds.forEach(e => {
               console.log(`[DEBUG] fields: ${JSON.stringify(e.fields?.map(f=>f.name))}`);
@@ -280,7 +279,8 @@ async function syncAuditChannel() {
           await processAuditMessage(msg);
           parsed++;
         }
-        total++;
+      }
+      total++;
       }
       lastId = messages.last()?.id;
       if (messages.size < 100) break;
